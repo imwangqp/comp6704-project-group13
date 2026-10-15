@@ -20,7 +20,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from optimizers import make_optimizer
 from optimizers.base import BaseOptimizer, OptimizerResult
 from src.data import Dataset, load_and_split
-from src.model import MLP
+from src.model import MLP, LogisticRegression, make_model
 
 # scikit-learn label convention: 0 = malignant, 1 = benign.
 MALIGNANT_CLASS = 0
@@ -115,6 +115,7 @@ def evaluate(model: MLP, theta: np.ndarray, X: np.ndarray, y: np.ndarray) -> Met
 # ----------------------------------------------------------------------
 @dataclass
 class RunReport:
+    model: str
     seed: int
     optimizer: str
     result: OptimizerResult
@@ -125,24 +126,28 @@ class RunReport:
 def run_training(
     data: Dataset,
     optimizer_name: str = "gd",
+    model_name: str = "mlp",
     seed: int = 0,
     init_seed: int | None = None,
     max_iter: int = 200,
     tol: float = 1e-6,
 ) -> RunReport:
-    """Train the 30->2->1 MLP on ``data`` with the selected optimizer.
+    """Train ``model_name`` on ``data`` with the selected optimizer.
 
     Args:
         data: dataset split from ``src.data.load_and_split``.
-        optimizer_name: one of the OPTIMIZER names ("gd" baseline, or
+        optimizer_name: one of the optimizer names ("gd" baseline, or
             "newton-cg" / "lbfgs" / "nelder-mead" / "cma-es").
+        model_name: "mlp" (Experiment B, 30->2->1, 65 params) or
+            "logreg" (Experiment A, convex baseline, 31 params). The same
+            optimizers run on either model unchanged.
         seed: weight-initialization seed (defaults to ``seed`` if
             ``init_seed`` is None) — kept separate from the split seed so
             robustness over "multiple random seeds and starting points"
             (Section 5) can be measured along either axis.
     """
     init_seed = seed if init_seed is None else init_seed
-    model = MLP(input_dim=data.input_dim, hidden_dim=2, seed=init_seed)
+    model = make_model(model_name, input_dim=data.input_dim, seed=init_seed)
     x0 = model.get_flat_params()
 
     # Full-batch objective — deterministic, required by the spec (Section 4).
@@ -159,6 +164,6 @@ def run_training(
     val_metrics = evaluate(model, result.theta, data.X_val, data.y_val)
     test_metrics = evaluate(model, result.theta, data.X_test, data.y_test)
     return RunReport(
-        seed=seed, optimizer=optimizer_name, result=result,
+        model=model_name, seed=seed, optimizer=optimizer_name, result=result,
         val_metrics=val_metrics, test_metrics=test_metrics,
     )

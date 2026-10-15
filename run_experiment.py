@@ -23,6 +23,10 @@ def main() -> None:
         "--optimizers", nargs="+", default=["gd"],
         help="optimizer names, e.g. gd newton-cg lbfgs nelder-mead cma-es",
     )
+    parser.add_argument(
+        "--models", nargs="+", default=["mlp"],
+        help="models to run: logreg (Experiment A) and/or mlp (Experiment B)",
+    )
     parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2],
                         help="random seeds for the data split")
     parser.add_argument("--init-seeds", nargs="+", type=int, default=None,
@@ -34,31 +38,34 @@ def main() -> None:
     init_seeds = args.init_seeds if args.init_seeds is not None else args.seeds
 
     header = (
-        f"{'optimizer':<12} {'seed':>4} {'final loss':>11} {'obj evals':>10} "
-        f"{'grad evals':>11} {'time (s)':>9} {'test acc':>9} {'test F1':>8} "
-        f"{'AUC':>7} {'mal recall':>11}"
+        f"{'model':<7} {'optimizer':<12} {'seed':>4} {'final loss':>11} "
+        f"{'obj evals':>10} {'grad evals':>11} {'hvp evals':>10} {'time (s)':>9} "
+        f"{'test acc':>9} {'test F1':>8} {'AUC':>7} {'mal recall':>11}"
     )
     print(header)
     print("-" * len(header))
 
     for seed, init_seed in zip(args.seeds, init_seeds):
         data = load_and_split(seed=seed)
-        for name in args.optimizers:
-            try:
-                report = run_training(
-                    data, optimizer_name=name, seed=seed, init_seed=init_seed,
-                    max_iter=args.max_iter, tol=args.tol,
+        for model_name in args.models:
+            for name in args.optimizers:
+                try:
+                    report = run_training(
+                        data, optimizer_name=name, model_name=model_name,
+                        seed=seed, init_seed=init_seed,
+                        max_iter=args.max_iter, tol=args.tol,
+                    )
+                except NotImplementedError as err:
+                    print(f"{model_name:<7} {name:<12} {seed:>4}  NOT IMPLEMENTED -> {err}")
+                    continue
+                r, t = report.result, report.test_metrics
+                print(
+                    f"{model_name:<7} {name:<12} {seed:>4} {r.final_loss:>11.6f} "
+                    f"{r.n_objective_evals:>10} {r.n_gradient_evals:>11} "
+                    f"{r.n_hessian_vec_evals:>10} {r.wall_time:>9.3f} "
+                    f"{t.accuracy:>9.4f} {t.f1:>8.4f} {t.roc_auc:>7.4f} "
+                    f"{t.recall_malignant:>11.4f}"
                 )
-            except NotImplementedError as err:
-                print(f"{name:<12} {seed:>4}  NOT IMPLEMENTED -> {err}")
-                continue
-            r, t = report.result, report.test_metrics
-            print(
-                f"{name:<12} {seed:>4} {r.final_loss:>11.6f} "
-                f"{r.n_objective_evals:>10} {r.n_gradient_evals:>11} "
-                f"{r.wall_time:>9.3f} {t.accuracy:>9.4f} {t.f1:>8.4f} "
-                f"{t.roc_auc:>7.4f} {t.recall_malignant:>11.4f}"
-            )
 
 
 if __name__ == "__main__":

@@ -136,3 +136,111 @@ class MLP:
 
     def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
         return (self.predict_proba(X) >= threshold).astype(np.int64)
+
+
+class LogisticRegression:
+    """Experiment A model: linear logistic regression (Section 4).
+
+    30 -> 1 linear map + sigmoid, i.e. 30 weights + 1 intercept = 31
+    trainable parameters. The full-batch BCE objective is CONVEX, so this
+    serves as the well-understood baseline against which the MLP
+    (Experiment B) is compared. Same flat-vector interface as ``MLP``:
+    every optimizer in ``optimizers/`` works on it unchanged.
+
+    Unlike the MLP, the Hessian is available in closed form
+    (H = (1/N) * X^T diag(p(1-p)) X), so Newton-CG gets an exact
+    Hessian-vector product here at zero extra gradient cost.
+    """
+
+    def __init__(self, input_dim: int = 30, seed: int = 0):
+        self.input_dim = input_dim
+        # Deterministic init protocol consistent with the MLP (Section 4).
+        rng = np.random.default_rng(seed)
+        lim = np.sqrt(6.0 / (input_dim + 1))
+        self.W = rng.uniform(-lim, lim, size=(1, input_dim))
+        self.b = np.zeros(1)
+
+        self._shapes = [self.W.shape, self.b.shape]
+        self.num_params = sum(int(np.prod(s)) for s in self._shapes)
+
+    # ------------------------------------------------------------------
+    # Flat-parameter view
+    # ------------------------------------------------------------------
+    def get_flat_params(self) -> np.ndarray:
+        return np.concatenate([self.W.ravel(), self.b])
+
+    def set_flat_params(self, theta: np.ndarray) -> None:
+        theta = np.asarray(theta, dtype=float)
+        sizes = [int(np.prod(s)) for s in self._shapes]
+        chunks = np.split(theta, np.cumsum(sizes)[:-1])
+        self.W = chunks[0].reshape(self._shapes[0])
+        self.b = chunks[1].reshape(self._shapes[1])
+
+    # ------------------------------------------------------------------
+    # Objective pieces handed to the optimizers
+    # ------------------------------------------------------------------
+    def forward_logits(self, X: np.ndarray) -> np.ndarray:
+        """Linear logits z = W x + b, shape (N,)."""
+        return (X @ self.W.T + self.b).ravel()
+
+    def make_objective(self, X: np.ndarray, y: np.ndarray):
+        """Return f(theta) = full-batch training loss (scalar, convex)."""
+        def objective(theta: np.ndarray) -> float:
+            self.set_flat_params(theta)
+            return bce_with_logits(self.forward_logits(X), y)
+        return objective
+
+    def make_grad(self, X: np.ndarray, y: np.ndarray):
+        """Return grad f(theta) = (1/N) * X^T (sigmoid(z) - y)."""
+        y = np.asarray(y, dtype=float).ravel()
+        n = len(y)
+
+        def grad(theta: np.ndarray) -> np.ndarray:
+            self.set_flat_params(theta)
+            z = self.forward_logits(X)
+            d_z = (expit(z) - y) / n                  # (N,)
+            g_W = d_z @ X                             # (1, D)
+            g_b = np.array([d_z.sum()])               # (1,)
+            return np.concatenate([g_W.ravel(), g_b])
+        return grad
+
+    def make_hess_vec(self, X: np.ndarray, y: np.ndarray):
+        """Exact Hessian-vector product: H v = (1/N) X^T diag(p(1-p)) (X v).
+
+        Analytic (no finite differences, no extra gradient evals) because
+        the BCE objective for logistic regression is convex with a
+        known-closed-form Hessian.
+        """
+        y = np.asarray(y, dtype=float).ravel()
+        n = len(y)
+
+        def hess_vec(theta: np.ndarray, v: np.ndarray) -> np.ndarray:
+            self.set_flat_params(theta)
+            z = self.forward_logits(X)
+            p = expit(z)
+            w = p * (1.0 - p)                         # (N,) second-derivative weights
+            v_W = v[: self.W.size].reshape(self.W.shape)   # (1, D)
+            Xv = (X @ v_W.T + v[self.W.size]).ravel()      # (N,)
+            Hv_W = ((w * Xv)[:, None] * X).sum(axis=0) / n  # (D,)
+            Hv_b = np.array([(w * Xv).sum() / n])           # (1,)
+            return np.concatenate([Hv_W, Hv_b])
+        return hess_vec
+
+    # ------------------------------------------------------------------
+    # Prediction
+    # ------------------------------------------------------------------
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Predicted probability of the positive class (benign, y=1)."""
+        return expit(self.forward_logits(X))
+
+    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+        return (self.predict_proba(X) >= threshold).astype(np.int64)
+
+
+def make_model(model_name: str, input_dim: int, seed: int):
+    """Build a model by name ("mlp" = Experiment B, "logreg" = Experiment A)."""
+    if model_name == "mlp":
+        return MLP(input_dim=input_dim, hidden_dim=2, seed=seed)
+    if model_name == "logreg":
+        return LogisticRegression(input_dim=input_dim, seed=seed)
+    raise KeyError(f"Unknown model '{model_name}'. Valid: ['mlp', 'logreg']")
