@@ -111,20 +111,45 @@ class MLP:
         return grad
 
     def make_hess_vec(self, X: np.ndarray, y: np.ndarray, eps: float = 1e-5):
-        """Return hess_vec(theta, v) via central finite differences.
+        """Return the analytic HVP by differentiating backprop along v.
 
-        H(theta) v ~= [grad(theta + eps*v) - grad(theta - eps*v)] / (2*eps)
-
-        This costs 2 gradient evaluations per call, which the training
-        loop accounts for separately (see OptimizerResult counters).
-        A closed-form HVP could be substituted here later without
-        touching any optimizer code.
+        No full Hessian or finite differences are needed. ``eps`` is kept
+        for compatibility with existing callers, but is unused.
         """
-        grad = self.make_grad(X, y)
+        y = np.asarray(y, dtype=float).ravel()
+        n = len(y)
 
         def hess_vec(theta: np.ndarray, v: np.ndarray) -> np.ndarray:
-            v = np.asarray(v, dtype=float)
-            return (grad(theta + eps * v) - grad(theta - eps * v)) / (2.0 * eps)
+            self.set_flat_params(theta)
+            sizes = [int(np.prod(shape)) for shape in self._shapes]
+            chunks = np.split(np.asarray(v, dtype=float), np.cumsum(sizes)[:-1])
+            v_W1, v_b1, v_W2, v_b2 = [
+                chunk.reshape(shape) for chunk, shape in zip(chunks, self._shapes)
+            ]
+
+            # Forward pass and its directional derivatives (prefixed v_).
+            h1 = np.tanh(X @ self.W1.T + self.b1)
+            tanh_prime = 1.0 - h1 ** 2
+            v_a1 = X @ v_W1.T + v_b1
+            v_h1 = tanh_prime * v_a1
+            z = (h1 @ self.W2.T + self.b2).ravel()
+            v_z = (v_h1 @ self.W2.T + h1 @ v_W2.T + v_b2).ravel()
+            prob = expit(z)
+            d_z = (prob - y) / n
+            v_d_z = prob * (1.0 - prob) * v_z / n
+
+            # Differentiate each backprop expression using the product rule.
+            Hv_W2 = (v_d_z[:, None] * h1 + d_z[:, None] * v_h1).sum(axis=0)
+            Hv_b2 = v_d_z.sum()
+            v_d_a1 = (
+                (v_d_z[:, None] * self.W2 + d_z[:, None] * v_W2) * tanh_prime
+                - 2.0 * (d_z[:, None] * self.W2) * h1 * v_h1
+            )
+            Hv_W1 = v_d_a1.T @ X
+            Hv_b1 = v_d_a1.sum(axis=0)
+            return np.concatenate([
+                Hv_W1.ravel(), Hv_b1, Hv_W2.ravel(), np.atleast_1d(Hv_b2)
+            ])
         return hess_vec
 
     # ------------------------------------------------------------------
